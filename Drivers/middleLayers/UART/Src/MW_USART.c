@@ -20,7 +20,7 @@ UART_HandleTypeDef huart2 = {
 
 UART_HandleTypeDef huart3 = {
   .Instance = USART6,
-  .Init.BaudRate = 9600,
+  .Init.BaudRate = 115200,
   .Init.WordLength = UART_WORDLENGTH_8B,
   .Init.StopBits = UART_STOPBITS_1,
   .Init.Parity = UART_PARITY_NONE,

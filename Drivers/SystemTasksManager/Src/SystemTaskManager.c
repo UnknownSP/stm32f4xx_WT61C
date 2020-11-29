@@ -33,8 +33,10 @@ static uint8_t raspi_control_rcv_data[8] = {0,0,0,0,0,0,0,0};
 static bool raspi_control_flag = true;
 
 static int test = 0;
-static bool test_flag = false;
+static bool test_flag = true;
 static int test_count = 0;
+
+static bool uart_rcv_cplt = true;
 
 static
 int SY_init(void);
@@ -56,9 +58,21 @@ int SY_doDevDriverTasks(void);
 #endif
 
 int main(void){
-  int ret,i,j;
+  int ret,i,j,k,ret_uart;
   static uint8_t test_data[8] = {};
   //static char test_data[8] = {'A','B','C','d','f','g','G','\n'};
+
+  static unsigned int count = 0;
+  static uint8_t receive_data[33*5] = {};
+  static uint8_t cal_data[33] = {};
+  static bool a_flag = true;
+  static bool b_flag = true;
+  static bool c_flag = true;
+
+  double a[3],w[3],angle[3],T;
+  int16_t temp_data = 0;
+
+  unsigned int chk_sum = 0;
 
   //システムを初期化します
   ret = SY_init();
@@ -84,65 +98,132 @@ int main(void){
   MW_printf("\033[2J\033[1;1H");
   flush();
 
+  while( 1 ){
+    receive_data[0] = MW_USART3Receive();
+    MW_IWDGClr();
+    if(receive_data[0] == 0x55){
+      receive_data[1] = MW_USART3Receive();
+      MW_IWDGClr();
+      if(receive_data[1] == 0x51){
+        for(i=0;i<31;i++){
+          receive_data[i+2] = MW_USART3Receive();
+          MW_IWDGClr();
+        }
+        break;
+      }
+    }
+  }
+
   //アプリケーションを開始するためのループです。
   while( 1 ){
     //ウォッチドックタイマーをリセットします
     MW_IWDGClr();//reset counter of watch dog  
 
-    //if( HAL_UART_Transmit_DMA(&huart2, (uint8_t*)test_data, sizeof(test_data)) == HAL_OK ){
-    //  MW_GPIOWrite(GPIOAID, GPIO_PIN_5 , GPIO_PIN_SET);
-    //}else{
-    //  MW_GPIOWrite(GPIOAID, GPIO_PIN_5 , GPIO_PIN_RESET);
-    //}
-
-    //個々のアプリケーションの実行をします。
-    SY_doAppTasks();  //もしメッセージを出すタイミングであれば  
-    //if((g_SY_system_counter % 1000 <= 10) && test_flag){  
-    //  if(test == 0){  
-    //    MW_GPIOWrite(GPIOAID, GPIO_PIN_5 , GPIO_PIN_SET);  
-    //    test = 1;  
-    //  }else if(test == 1){  
-    //    MW_GPIOWrite(GPIOAID, GPIO_PIN_5 , GPIO_PIN_RESET);  
-    //    test = 0;  
-    //  }  
-    //  test_flag = false;  
-    //}else{  
-    //  test_flag = true;  
-    //}
-    if( g_SY_system_counter % _MESSAGE_INTERVAL_MS < _INTERVAL_MS ){
-      //HAL_I2C_Master_Receive_DMA(&hi2c2, 0x1c << 1, (uint8_t*)test_data, 8);
-#if USE_RASPI_CONTROL
-      if(raspi_control_flag){
-        MW_USART2ReceiveMult(8, raspi_control_rcv_data);
-        raspi_control_flag = false;
+    if(uart_rcv_cplt){
+      ret_uart = MW_USART3ReceiveMult(66, receive_data);
+      uart_rcv_cplt = false;
+      if(ret_uart){
+        MW_printf("UART Error\n");
       }
-	    for(int i=0;i<8;i++){
-	      MW_printf("[%3d]",raspi_control_rcv_data[i]);
-	    }
-      MW_printf("\n");
-	    for(int i=0;i<8;i++){
-	      raspi_control_rcv[i] = raspi_control_rcv_data[i];
-	    }
-#endif
+    }
+    
+    for(i=0;i<66;i++){
+      if(receive_data[i] == 0x55 && receive_data[i+1] == 0x51 && a_flag){
+        chk_sum = 0;
+        for(k=0;k<10;k++){
+          chk_sum += receive_data[i+k];
+        }
+        if(receive_data[i+10] == (uint8_t)chk_sum){
+          for(j=0;j<11;j++){
+            cal_data[j] = receive_data[i+j];
+          }
+          a_flag = false;
+        }
+      }
+      if(receive_data[i] == 0x55 && receive_data[i+1] == 0x52 && b_flag){
+        chk_sum = 0;
+        for(k=0;k<10;k++){
+          chk_sum += receive_data[i+k];
+        }
+        if(receive_data[i+10] == (uint8_t)chk_sum){
+          for(j=0;j<11;j++){
+            cal_data[j+11] = receive_data[i+j];
+          }
+          b_flag = false;
+        }
+      }
+      if(receive_data[i] == 0x55 && receive_data[i+1] == 0x53 && c_flag){
+        chk_sum = 0;
+        for(k=0;k<10;k++){
+          chk_sum += receive_data[i+k];
+        }
+        if(receive_data[i+10] == (uint8_t)chk_sum){
+          for(j=0;j<11;j++){
+            cal_data[j+22] = receive_data[i+j];
+          }
+          c_flag = false;
+        }
+      }
+      if(!a_flag && !b_flag && !c_flag){
+        break;
+      }
+    }
+    a_flag = true;
+    b_flag = true;
+    c_flag = true;
+
+    temp_data = (cal_data[3]<<8) | cal_data[2];
+    a[0] = (double)temp_data/32768.0 * 16.0*9.8;
+    temp_data = (cal_data[5]<<8) | cal_data[4];
+    a[1] = (double)temp_data/32768.0 * 16.0*9.8;
+    temp_data = (cal_data[7]<<8) | cal_data[6];
+    a[2] = (double)temp_data/32768.0 * 16.0*9.8;
+    temp_data = (cal_data[9]<<8) | cal_data[8];
+    T = (double)temp_data/340.0 + 36.25;
+
+    temp_data = (cal_data[14]<<8) | cal_data[13];
+    w[0] = (double)temp_data/32768.0 * 2000;
+    temp_data = (cal_data[16]<<8) | cal_data[15];
+    w[1] = (double)temp_data/32768.0 * 2000;
+    temp_data = (cal_data[18]<<8) | cal_data[17];
+    w[2] = (double)temp_data/32768.0 * 2000;
+    temp_data = (cal_data[20]<<8) | cal_data[19];
+    T = (double)temp_data/340.0 + 36.25;
+
+    temp_data = (cal_data[25]<<8) | cal_data[24];
+    angle[0] = (double)temp_data/32768.0 * 180;
+    temp_data = (cal_data[27]<<8) | cal_data[26];
+    angle[1] = (double)temp_data/32768.0 * 180;
+    temp_data = (cal_data[29]<<8) | cal_data[28];
+    angle[2] = (double)temp_data/32768.0 * 180;
+    temp_data = (cal_data[31]<<8) | cal_data[30];
+    T = (double)temp_data/340.0 + 36.25;
+
+    if( g_SY_system_counter % _MESSAGE_INTERVAL_MS < _INTERVAL_MS ){
       if( g_SY_system_counter % 1000 == 0){
 	      MW_printf("\033[2J");
       }
       MW_printf("\033[1;1H");//カーソルを(1,1)にセットして
-      DD_RCPrint((uint8_t*)g_rc_data);//RCのハンドラを表示します
-      //for(i=0;i<8;i++){ 
-      //  MW_printf("[%4d]",test_data[i]); 
-      //}
-      //MW_printf("\n"); 
+      //DD_RCPrint((uint8_t*)g_rc_data);//RCのハンドラを表示します
+      for(i=0;i<33;i++){ 
+        MW_printf("[%4d]",cal_data[i]);
+        test_count++; 
+        if(test_count%11 == 0){
+          test_count = 0;
+          MW_printf("\n"); 
+        }
+      }
+      test_count = 0;
+      MW_printf("\n"); 
+      MW_printf("%5d %5d %5d %5d\n",(int)(a[0]*100.0),(int)(a[1]*100.0),(int)(a[2]*100.0),(int)(T*10.0));
+      MW_printf("%5d %5d %5d %5d\n",(int)(w[0]*100.0),(int)(w[1]*100.0),(int)(w[2]*100.0),(int)(T*10.0));
+      MW_printf("%5d %5d %5d %5d\n",(int)(angle[0]*100.0),(int)(angle[1]*100.0),(int)(angle[2]*100.0),(int)(T*10.0));
       DD_print();//各デバイスハンドラを表示します
       flush(); /* out message. */
     }
     //タイミング待ちを行います
     while( g_SY_system_counter % _INTERVAL_MS != _INTERVAL_MS / 2 - 1 ){
     }
-#if !_NO_DEVICE
-    //デバイスがあれば、各デバイスタスクを実行します。これはハンドラに格納されているデータをMDに転送する内容などが含まれます。
-    ret = SY_doDevDriverTasks();
-#endif
     //エラー処理です
     if( ret ){
       message("err", "Device Driver Tasks Faild%d", ret);
@@ -151,23 +232,6 @@ int main(void){
     //タイミング待ちを行います  
     while( g_SY_system_counter % _INTERVAL_MS != 0 ){  
     }
-    //もし一定時間以上応答がない場合はRCが切断されたとみなし、リセットをかけます。
-#if DD_USE_RC
-    count_for_rc++;
-    if(count_for_rc >= 20){
-      message("err","RC disconnected!");
-      count_for_rc = 0;
-#if DD_NUM_OF_LD
-      for(i=0;i<DD_NUM_OF_LD;i++){
-	for(j=0;j<8;j++){
-	  g_ld_h[i].mode[j] = D_LMOD_BLINK_RED;
-	}
-	DD_I2C1Send(g_ld_h[i].add, g_ld_h[i].mode, 8);
-      }
-#endif
-      while(1);
-    }
-#endif
   }
 } /* main */
 
@@ -222,53 +286,15 @@ int SY_init(void){
     return EXIT_FAILURE;
   }
 
-#if USE_RASPI_CONTROL
-  MW_USARTSetBaudRate(USART3ID, 9600);
-  MW_USARTInit(USART3ID);
-#endif
-  /*Initialize printf null transit*/
-  flush();
-#if !_NO_DEVICE
-  ret = DD_initialize();
-  if(ret){
+  ret = MW_USARTInit(USART3ID);
+  if( ret ){
     return ret;
   }
-#endif
+
+  /*Initialize printf null transit*/
+  flush();
 
   appInit();
-  
-#if DD_USE_RC
-  message("msg", "wait for RC connection...");
-#if DD_NUM_OF_LD
-  for(i=0;i<DD_NUM_OF_LD;i++){
-    for(j=0;j<8;j++){
-      g_ld_h[i].mode[j] = D_LMOD_BLINK_RED;
-    }
-    DD_I2C1Send(g_ld_h[i].add, g_ld_h[i].mode, 8);
-  }
-#endif
-  if( DD_RCInit((uint8_t*)g_rc_data, 100000) ){
-    message("err", "RC initialize faild!\n");
-#if DD_NUM_OF_LD
-    for(i=0;i<DD_NUM_OF_LD;i++){
-      for(j=0;j<8;j++){
-	g_ld_h[i].mode[j] = D_LMOD_BLINK_RED;
-      }
-      DD_I2C1Send(g_ld_h[i].add, g_ld_h[i].mode, 8);
-    }
-#endif
-    return EXIT_FAILURE;
-  }
-#if DD_NUM_OF_LD
-  for(i=0;i<DD_NUM_OF_LD;i++){
-    for(j=0;j<8;j++){
-      g_ld_h[i].mode[j] = D_LMOD_DIMING_BLUE;
-    }
-    DD_I2C1Send(g_ld_h[i].add, g_ld_h[i].mode, 8);
-  }
-#endif
-  message("msg", "RC connected sucess");
-#endif
   
   /*initialize IWDG*/
   message("msg", "IWDG initialize");
@@ -435,16 +461,11 @@ static void SY_DMAInit(void)
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle){
+  int ret = 0;
   UNUSED(UartHandle);
-#if DD_USE_RC
-  if(DD_RCTask(rc_rcv, (uint8_t*)g_rc_data)!=0){
-    message("err","rc err");
+  if(UartHandle->Instance == USART6){
+    uart_rcv_cplt = true;
   }
-  count_for_rc = 0;
-#endif
-#if USE_RASPI_CONTROL
-  raspi_control_flag = true;
-#endif
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *UartHandle){
